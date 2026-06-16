@@ -1,6 +1,7 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, Response
 from datetime import datetime
 import requests
+import json
 import pytz
 
 app = Flask(__name__)
@@ -125,55 +126,67 @@ def chat():
     if not user_message and not image_b64:
         return jsonify({"error": "No message provided"}), 400
 
-    time_keywords = ["time", "clock", "hour", "when", "timezone", "what time"]
-    is_time_question = any(kw in user_message.lower() for kw in time_keywords)
-    extra_times = detect_timezones(user_message) if is_time_question else {}
-
-    system_prompt = get_system_prompt(current_mode, extra_times)
-
-    # If image, describe it with moondream first then pass description to main model
-    if image_b64:
+    def generate():
+        global conversation_history
         try:
-            vision_payload = {
-                "model": VISION_MODEL,
-                "messages": [{"role": "user", "content": "Describe this image in detail.", "images": [image_b64]}],
-                "stream": False,
-                "options": {"num_predict": 450}
+            enhanced_message = user_message
+            if image_b64:
+                yield f"data: {json.dumps({'status': '📷 Analyzing image with Moondream...'})}\n\n"
+                try:
+                    vision_payload = {
+                        "model": VISION_MODEL,
+                        "messages": [{"role": "user", "content": "Describe this image in detail.", "images": [image_b64]}],
+                        "stream": False,
+                        "options": {"num_predict": 450}
+                    }
+                    vision_resp = requests.post(OLLAMA_URL, json=vision_payload, timeout=60)
+                    vision_resp.raise_for_status()
+                    image_description = vision_resp.json()["message"]["content"]
+                    enhanced_message = f"{user_message or 'What do you think?'}\n\n[The user showed you an image. Here is what you see: {image_description}]"
+                except Exception as e:
+                    enhanced_message = f"{user_message or 'What do you think?'}\n\n[User sent an image but vision model failed: {str(e)}]"
+            
+            # Fix: Save enhanced message with image details into history for context retention
+            conversation_history.append({"role": "user", "content": enhanced_message or "what do you think of this image?"})
+
+            time_keywords = ["time", "clock", "hour", "when", "timezone", "what time"]
+            is_time_question = any(kw in (user_message or "").lower() for kw in time_keywords)
+            extra_times = detect_timezones(user_message or "") if is_time_question else {}
+
+            system_prompt = get_system_prompt(current_mode, extra_times)
+
+            yield f"data: {json.dumps({'status': '✍️ Thinking...'})}\n\n"
+
+            payload = {
+                "model": MODES[current_mode]["model"],
+                "messages": [
+                    {"role": "system", "content": system_prompt}
+                ] + conversation_history[:-1] + [{"role": "user", "content": enhanced_message}],
+                "stream": True,
+                "options": {"num_predict": 550}
             }
-            vision_resp = requests.post(OLLAMA_URL, json=vision_payload, timeout=60)
-            vision_resp.raise_for_status()
-            image_description = vision_resp.json()["message"]["content"]
-            enhanced_message = f"{user_message or 'What do you think?'}\n\n[The user showed you an image. Here is what you see: {image_description}]"
+
+            response = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=120)
+            response.raise_for_status()
+
+            full_reply = ""
+            for line in response.iter_lines():
+                if line:
+                    chunk = json.loads(line.decode('utf-8'))
+                    content = chunk.get("message", {}).get("content", "")
+                    full_reply += content
+                    yield f"data: {json.dumps({'content': content})}\n\n"
+
+            conversation_history.append({"role": "assistant", "content": full_reply})
+
+        except requests.exceptions.ConnectionError:
+            yield f"data: {json.dumps({'error': 'Cannot connect to Ollama. Make sure it is running with: ollama serve'})}\n\n"
+        except requests.exceptions.Timeout:
+            yield f"data: {json.dumps({'error': 'Ollama took too long to respond. Try a smaller model.'})}\n\n"
         except Exception as e:
-            enhanced_message = f"{user_message or 'What do you think?'}\n\n[User sent an image but vision model failed: {str(e)}]"
-    else:
-        enhanced_message = user_message
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-    conversation_history.append({"role": "user", "content": user_message or "what do you think of this image?"})
-
-    payload = {
-        "model": MODES[current_mode]["model"],
-        "messages": [
-            {"role": "system", "content": system_prompt}
-        ] + conversation_history[:-1] + [{"role": "user", "content": enhanced_message}],
-        "stream": False,
-        "options": {"num_predict": 550}
-    }
-
-    try:
-        response = requests.post(OLLAMA_URL, json=payload, timeout=120)
-        response.raise_for_status()
-        result = response.json()
-        bot_reply = result["message"]["content"]
-        conversation_history.append({"role": "assistant", "content": bot_reply})
-        return jsonify({"reply": bot_reply, "mode": current_mode})
-
-    except requests.exceptions.ConnectionError:
-        return jsonify({"error": "Cannot connect to Ollama. Make sure it's running with: ollama serve"}), 503
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "Ollama took too long to respond. Try a smaller model."}), 504
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return Response(generate(), mimetype="text/event-stream")
 
 @app.route("/reset", methods=["POST"])
 def reset():
