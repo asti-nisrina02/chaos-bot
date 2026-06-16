@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, render_template
 from datetime import datetime
 import requests
 import pytz
+import re
 
 app = Flask(__name__)
 
@@ -37,19 +38,59 @@ Your personality:
 You are helpful, grounded, and easy to talk to.
 """
 
+# Keyword → pytz timezone mapping
+TIMEZONE_KEYWORDS = {
+    "japan": "Asia/Tokyo", "tokyo": "Asia/Tokyo",
+    "korea": "Asia/Seoul", "seoul": "Asia/Seoul",
+    "china": "Asia/Shanghai", "beijing": "Asia/Shanghai", "shanghai": "Asia/Shanghai",
+    "singapore": "Asia/Singapore",
+    "malaysia": "Asia/Kuala_Lumpur", "kuala lumpur": "Asia/Kuala_Lumpur",
+    "indonesia": "Asia/Jakarta", "jakarta": "Asia/Jakarta", "wib": "Asia/Jakarta",
+    "bali": "Asia/Makassar", "wita": "Asia/Makassar",
+    "australia": "Australia/Sydney", "sydney": "Australia/Sydney",
+    "india": "Asia/Kolkata", "mumbai": "Asia/Kolkata", "new delhi": "Asia/Kolkata",
+    "austria": "Europe/Vienna", "vienna": "Europe/Vienna",
+    "germany": "Europe/Berlin", "berlin": "Europe/Berlin",
+    "france": "Europe/Paris", "paris": "Europe/Paris",
+    "uk": "Europe/London", "london": "Europe/London", "england": "Europe/London",
+    "netherlands": "Europe/Amsterdam", "amsterdam": "Europe/Amsterdam",
+    "turkey": "Europe/Istanbul", "istanbul": "Europe/Istanbul",
+    "dubai": "Asia/Dubai", "uae": "Asia/Dubai",
+    "new york": "America/New_York", "usa east": "America/New_York",
+    "los angeles": "America/Los_Angeles", "california": "America/Los_Angeles",
+    "chicago": "America/Chicago",
+    "brazil": "America/Sao_Paulo", "sao paulo": "America/Sao_Paulo",
+    "utc": "UTC", "gmt": "UTC",
+}
+
 conversation_history = []
 current_mode = "chaos"
 
-def get_system_prompt(mode):
+def detect_timezones(message):
+    """Find any country/city mentions in the message and return their current times."""
+    message_lower = message.lower()
+    found = {}
+    for keyword, tz_name in TIMEZONE_KEYWORDS.items():
+        if keyword in message_lower and tz_name not in found.values():
+            tz = pytz.timezone(tz_name)
+            local_time = datetime.now(pytz.utc).astimezone(tz)
+            found[keyword] = (tz_name, local_time.strftime("%A, %B %d %Y, %H:%M %Z"))
+    return found
+
+def get_system_prompt(mode, extra_time_info=None):
+    """Build system prompt with local time + any extra timezone info."""
     try:
-        local_tz = datetime.now().astimezone().tzinfo
         now = datetime.now().astimezone()
         tz_name = now.strftime("%Z")
         time_str = now.strftime(f"%A, %B %d %Y, %H:%M {tz_name}")
     except Exception:
         time_str = datetime.now().strftime("%A, %B %d %Y, %H:%M")
 
-    time_context = f"The current date and time is: {time_str}. Use this if the user asks about the time or date."
+    time_context = f"The current date and time on the user's machine is: {time_str}."
+
+    if extra_time_info:
+        lines = [f"- {k.title()}: {v[1]}" for k, v in extra_time_info.items()]
+        time_context += "\n\nCurrent times in mentioned locations (ALREADY CALCULATED — use these exact values, do NOT recalculate):\n" + "\n".join(lines)
 
     base = CHAOS_SYSTEM_PROMPT if mode == "chaos" else CHILL_SYSTEM_PROMPT
     return time_context + "\n\n" + base
@@ -69,20 +110,20 @@ def chat():
     if not user_message:
         return jsonify({"error": "No message provided"}), 400
 
-    conversation_history.append({
-        "role": "user",
-        "content": user_message
-    })
+    conversation_history.append({"role": "user", "content": user_message})
+
+    # Detect if user is asking about time in other places
+    time_keywords = ["time", "clock", "hour", "when", "timezone", "what time"]
+    is_time_question = any(kw in user_message.lower() for kw in time_keywords)
+    extra_times = detect_timezones(user_message) if is_time_question else {}
 
     payload = {
         "model": MODEL,
         "messages": [
-            {"role": "system", "content": get_system_prompt(current_mode)}
+            {"role": "system", "content": get_system_prompt(current_mode, extra_times)}
         ] + conversation_history,
         "stream": False,
-        "options": {
-            "num_predict": 200
-        }
+        "options": {"num_predict": 200}
     }
 
     try:
@@ -91,11 +132,7 @@ def chat():
         result = response.json()
         bot_reply = result["message"]["content"]
 
-        conversation_history.append({
-            "role": "assistant",
-            "content": bot_reply
-        })
-
+        conversation_history.append({"role": "assistant", "content": bot_reply})
         return jsonify({"reply": bot_reply, "mode": current_mode})
 
     except requests.exceptions.ConnectionError:
