@@ -138,7 +138,7 @@ def chat():
                 "model": VISION_MODEL,
                 "messages": [{"role": "user", "content": "Describe this image in detail.", "images": [image_b64]}],
                 "stream": False,
-                "options": {"num_predict": 150}
+                "options": {"num_predict": 450}
             }
             vision_resp = requests.post(OLLAMA_URL, json=vision_payload, timeout=60)
             vision_resp.raise_for_status()
@@ -157,7 +157,7 @@ def chat():
             {"role": "system", "content": system_prompt}
         ] + conversation_history[:-1] + [{"role": "user", "content": enhanced_message}],
         "stream": False,
-        "options": {"num_predict": 200}
+        "options": {"num_predict": 550}
     }
 
     try:
