@@ -1,6 +1,6 @@
 # CHAOS Bot 🤖💥
 
-A delightful, dual-personality chatbot powered by Flask and a local Ollama instance (using the `gemma3:1b` model). It features timezone detection and customizable assistant personalities!
+A delightful, dual-personality chatbot powered by Flask and a local Ollama instance. It features timezone detection, customizable assistant personalities, and vision/image description capabilities!
 
 ---
 
@@ -10,6 +10,7 @@ A delightful, dual-personality chatbot powered by Flask and a local Ollama insta
   * **🤖 CHAOS Mode**: A hilariously dramatic, unhinged assistant that loves capitalization, tangents, and chaotic stories while remaining helpful.
   * **☕ CHILL Mode**: A warm, calm, direct, and composed companion for straightforward answers.
 * **Smart Timezone Detection**: Dynamically detects location keywords (like `tokyo`, `london`, `new york`, `jakarta`, etc.) in time queries to provide the exact time anywhere in the world.
+* **🖼️ Vision & Image Analysis**: Upload images directly in the chat! The bot will dynamically switch to a vision-capable model (`gemma3:4b`) to describe and react to the uploaded image.
 * **Modern Web Interface**: Responsive, interactive chat interface to converse with the bot.
 
 ---
@@ -33,10 +34,11 @@ chaos-bot/
 ## Setup & Installation
 
 ### 1. Prerequisite (Ollama)
-Ensure you have [Ollama](https://ollama.com) installed and running on your system with the `gemma3:1b` model:
+Ensure you have [Ollama](https://ollama.com) installed and running on your system with the models pulled:
 ```bash
 ollama serve
-ollama pull gemma3:1b
+ollama pull gemma3:1b   # For text-only mode
+ollama pull gemma3:4b   # For vision/image-analysis mode
 ```
 
 ### 2. Set Up Virtual Environment & Dependencies
@@ -68,4 +70,7 @@ Open your browser and visit: **`http://localhost:5000`**
 ## Customizing the Bot
 
 * **System Prompts**: Modify `CHAOS_SYSTEM_PROMPT` and `CHILL_SYSTEM_PROMPT` inside `chaos-bot/app.py` to change the AI's behavior and personality.
-* **LLM Model**: If you want to use a larger or different model (e.g., `gemma3:4b`), update the `MODEL` variable at the top of `chaos-bot/app.py`.
+* **LLM Models**: Customize the model configurations at the top of `chaos-bot/app.py` using any model you have installed locally in Ollama:
+  * `MODEL`: Model used for standard text chats (defaults to `gemma3:1b`).
+  * `VISION_MODEL`: Model used when an image is attached (defaults to `gemma3:4b`).
+

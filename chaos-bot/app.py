@@ -2,12 +2,13 @@ from flask import Flask, request, jsonify, render_template
 from datetime import datetime
 import requests
 import pytz
-import re
+import base64
 
 app = Flask(__name__)
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "gemma3:1b"
+VISION_MODEL = "gemma3:4b"
 
 CHAOS_SYSTEM_PROMPT = """You are CHAOS — a hilariously unhinged AI assistant who somehow still manages to be helpful.
 
@@ -38,7 +39,6 @@ Your personality:
 You are helpful, grounded, and easy to talk to.
 """
 
-# Keyword → pytz timezone mapping
 TIMEZONE_KEYWORDS = {
     "japan": "Asia/Tokyo", "tokyo": "Asia/Tokyo",
     "korea": "Asia/Seoul", "seoul": "Asia/Seoul",
@@ -54,20 +54,16 @@ TIMEZONE_KEYWORDS = {
     "france": "Europe/Paris", "paris": "Europe/Paris",
     "uk": "Europe/London", "london": "Europe/London", "england": "Europe/London",
     "netherlands": "Europe/Amsterdam", "amsterdam": "Europe/Amsterdam",
-    "turkey": "Europe/Istanbul", "istanbul": "Europe/Istanbul",
     "dubai": "Asia/Dubai", "uae": "Asia/Dubai",
-    "new york": "America/New_York", "usa east": "America/New_York",
-    "los angeles": "America/Los_Angeles", "california": "America/Los_Angeles",
-    "chicago": "America/Chicago",
-    "brazil": "America/Sao_Paulo", "sao paulo": "America/Sao_Paulo",
-    "utc": "UTC", "gmt": "UTC",
+    "new york": "America/New_York", "los angeles": "America/Los_Angeles",
+    "california": "America/Los_Angeles", "chicago": "America/Chicago",
+    "brazil": "America/Sao_Paulo", "utc": "UTC", "gmt": "UTC",
 }
 
 conversation_history = []
 current_mode = "chaos"
 
 def detect_timezones(message):
-    """Find any country/city mentions in the message and return their current times."""
     message_lower = message.lower()
     found = {}
     for keyword, tz_name in TIMEZONE_KEYWORDS.items():
@@ -78,7 +74,6 @@ def detect_timezones(message):
     return found
 
 def get_system_prompt(mode, extra_time_info=None):
-    """Build system prompt with local time + any extra timezone info."""
     try:
         now = datetime.now().astimezone()
         tz_name = now.strftime("%Z")
@@ -106,28 +101,46 @@ def chat():
     data = request.get_json()
     user_message = data.get("message", "").strip()
     current_mode = data.get("mode", "chaos")
+    image_b64 = data.get("image", None)
 
-    if not user_message:
+    if not user_message and not image_b64:
         return jsonify({"error": "No message provided"}), 400
 
-    conversation_history.append({"role": "user", "content": user_message})
-
-    # Detect if user is asking about time in other places
     time_keywords = ["time", "clock", "hour", "when", "timezone", "what time"]
     is_time_question = any(kw in user_message.lower() for kw in time_keywords)
     extra_times = detect_timezones(user_message) if is_time_question else {}
 
+    system_prompt = get_system_prompt(current_mode, extra_times)
+
+    # Build the user message content
+    # Ollama vision format: images go as a separate list in the message object
+    if image_b64:
+        user_msg_obj = {
+            "role": "user",
+            "content": user_message or "What do you see in this image? React to it.",
+            "images": [image_b64]
+        }
+        model_to_use = VISION_MODEL
+        conversation_history.append({"role": "user", "content": user_message or "What do you see in this image?"})
+    else:
+        user_msg_obj = {"role": "user", "content": user_message}
+        model_to_use = MODEL
+        conversation_history.append({"role": "user", "content": user_message})
+
+    # Build messages: system + history (without current) + current msg with image
+    history_without_last = conversation_history[:-1]
+
     payload = {
-        "model": MODEL,
+        "model": model_to_use,
         "messages": [
-            {"role": "system", "content": get_system_prompt(current_mode, extra_times)}
-        ] + conversation_history,
+            {"role": "system", "content": system_prompt}
+        ] + history_without_last + [user_msg_obj],
         "stream": False,
         "options": {"num_predict": 200}
     }
 
     try:
-        response = requests.post(OLLAMA_URL, json=payload, timeout=120)
+        response = requests.post(OLLAMA_URL, json=payload, timeout=180)
         response.raise_for_status()
         result = response.json()
         bot_reply = result["message"]["content"]
